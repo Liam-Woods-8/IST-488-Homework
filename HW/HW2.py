@@ -66,19 +66,18 @@ def validate_openai_key() -> bool:
         return False
 
 
-def validate_claude_key() -> bool:
+def validate_claude_key() -> tuple[bool, str]:
     try:
         client = anthropic.Anthropic(api_key=claude_api_key)
-        # Minimal call to confirm the key works
         client.messages.create(
             model=claude_model,
             max_tokens=1,
             temperature=0,
             messages=[{"role": "user", "content": "hi"}],
         )
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 if st.button("Summarize", disabled=not url):
@@ -103,8 +102,9 @@ if st.button("Summarize", disabled=not url):
         st.write_stream(stream)
 
     else:
-        if not claude_api_key or not validate_claude_key():
-            st.error("Claude key is missing or invalid.")
+        ok, err = validate_claude_key()
+        if not ok:
+            st.error(f"Claude key loaded, but request failed: {err}")
             st.stop()
 
         client = anthropic.Anthropic(api_key=claude_api_key)
