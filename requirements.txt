@@ -2,5 +2,5 @@ streamlit
 openai
 anthropic
 requests
-beutifulsoup4
+beautifulsoup4
 PyMuPDF
