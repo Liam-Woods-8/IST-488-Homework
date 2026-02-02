@@ -42,6 +42,9 @@ use_advanced_model = st.sidebar.checkbox("Use advanced model")
 openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
 claude_api_key = st.secrets.get("CLAUDE_API_KEY", "")
 
+st.sidebar.write("Secrets keys:", list(st.secrets.keys()))
+st.sidebar.caption(f"Claude key loaded: {'yes' if claude_api_key else 'no'}")
+
 # Model mapping
 openai_model = "gpt-5-chat-latest" if use_advanced_model else "gpt-5-nano"
 claude_model = "claude-3-sonnet-20240229" if use_advanced_model else "claude-3-haiku-20240307"
