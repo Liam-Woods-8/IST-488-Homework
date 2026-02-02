@@ -44,7 +44,7 @@ claude_api_key = st.secrets.get("CLAUDE_API_KEY", "")
 
 # Model mapping
 openai_model = "gpt-5-chat-latest" if use_advanced_model else "gpt-5-nano"
-claude_model = "claude-3-5-sonnet-latest" if use_advanced_model else "claude-3-5-haiku-latest"
+claude_model = "claude-3-haiku-20240307"
 
 
 def build_prompt(page_text: str) -> str:
@@ -105,10 +105,12 @@ if st.button("Summarize", disabled=not url):
             st.stop()
 
         client = anthropic.Anthropic(api_key=claude_api_key)
+
         response = client.messages.create(
-            model=claude_model,
+            model="claude-3-haiku-20240307",
             max_tokens=600,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
         )
+
         st.markdown(response.content[0].text)
