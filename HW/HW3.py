@@ -133,6 +133,9 @@ if prompt:
 
         with st.chat_message("assistant"):
             collected = []
+            placeholder = st.empty()
+            full = ""
+
             with client.messages.stream(
                 model="claude-opus-4-6",
                 max_tokens=700,
@@ -142,7 +145,8 @@ if prompt:
             ) as stream:
                 for text in stream.text_stream:
                     collected.append(text)
-                    st.write(text, end="")
+                    full += text
+                    placeholder.markdown(full)
 
             assistant_text = "".join(collected)
 
