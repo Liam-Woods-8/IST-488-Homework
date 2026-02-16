@@ -158,7 +158,10 @@ if not db_exists():
         )
         st.stop()
 
-    st.info("Vector DB not found. Building it once from the HTML files...")
+    if not st.session_state.get("did_build_db", False):
+        st.info("Vector DB not found. Building it once from the HTML files...")
+        st.session_state.did_build_db = True
+
     build_vector_db_once()
 
 if "collection" not in st.session_state:
