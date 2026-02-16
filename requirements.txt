@@ -4,3 +4,5 @@ anthropic
 requests
 beautifulsoup4
 PyMuPDF
+chromadb
+lxml
