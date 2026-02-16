@@ -12,7 +12,7 @@ st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="cente
 st.title("HW4 — iSchool Chatbot Using RAG")
 
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
-HTML_DIR = "/workspaces/Homework-1-IST488/HW/data"
+HTML_DIR = "/HW/data"
 DB_DIR = "chroma_hw4_db"
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
