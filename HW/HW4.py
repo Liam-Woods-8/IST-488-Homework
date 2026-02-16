@@ -83,16 +83,15 @@ def build_vector_db_once():
         pass
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
-    oai = OpenAI(api_key=OPENAI_API_KEY)
+    oai = st.session_state.openai_client
 
-    docs, metas, ids, embs = [], [], [], []
-
-    def embed_texts(text_list):
-        resp = oai.embeddings.create(
-            model="text-embedding-3-small",
-            input=text_list
-        )
-        return [d.embedding for d in resp.data]
+    def embed_texts(text_list, batch_size=50):
+        all_embs = []
+        for i in range(0, len(text_list), batch_size):
+            batch = text_list[i:i+batch_size]
+            resp = oai.embeddings.create(model="text-embedding-3-small", input=batch)
+            all_embs.extend([d.embedding for d in resp.data])
+        return all_embs
 
     batch_texts = []
     batch_meta = []
@@ -103,7 +102,7 @@ def build_vector_db_once():
         text = read_html_as_text(fp)
         c1, c2 = chunk_into_two(text)
 
-        batch_texts.extend([c1[:12000], c2[:12000]])
+        batch_texts.extend([cap_text(c1), cap_text(c2)])
         batch_meta.extend([{"source": base, "chunk": 1}, {"source": base, "chunk": 2}])
         batch_ids.extend([f"{base}::1", f"{base}::2"])
 
@@ -121,7 +120,7 @@ def get_collection():
     return client.get_or_create_collection(name=COLLECTION_NAME)
 
 def retrieve_context(collection, query: str, k: int = TOP_K) -> str:
-    oai = OpenAI(api_key=OPENAI_API_KEY)
+    oai = st.session_state.openai_client
     q_emb = oai.embeddings.create(
         model="text-embedding-3-small",
         input=[query]
