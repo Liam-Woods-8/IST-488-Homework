@@ -6,15 +6,12 @@ from bs4 import BeautifulSoup
 
 try:
     import chromadb
-    from chromadb.config import Settings
     CHROMADB_AVAILABLE = True
     CHROMADB_IMPORT_ERROR = None
 except Exception as e:
     chromadb = None
-    Settings = None
     CHROMADB_AVAILABLE = False
     CHROMADB_IMPORT_ERROR = str(e)
-from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from openai import OpenAI
 
 st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="centered")
@@ -23,7 +20,8 @@ st.title("HW4 — iSchool Chatbot Using RAG")
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 HERE = os.path.dirname(__file__)
 HTML_DIR = os.path.join(HERE, "data")
-DB_DIR = "chroma_hw4_db"
+# Use an absolute path for the Chroma DB folder
+DB_DIR = os.path.join(HERE, "chroma_hw4_db")
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
 OVERLAP_SENTENCES = 2
@@ -65,6 +63,8 @@ def db_exists() -> bool:
     return os.path.isdir(DB_DIR) and len(os.listdir(DB_DIR)) > 0
 
 def get_embedding_fn():
+    # import the Chroma helper here so top-level import doesn't fail
+    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
     return OpenAIEmbeddingFunction(
         api_key=OPENAI_API_KEY,
         model_name="text-embedding-3-small",
@@ -80,10 +80,7 @@ def build_vector_db_once():
         st.error(f"No .html files found in: {HTML_DIR}")
         st.stop()
 
-    client = chromadb.Client(Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory=DB_DIR,
-    ))
+    client = chromadb.PersistentClient(path=DB_DIR)
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=get_embedding_fn()
@@ -105,10 +102,7 @@ def build_vector_db_once():
     collection.add(documents=docs, metadatas=metas, ids=ids)
 
 def get_collection():
-    client = chromadb.Client(Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory=DB_DIR,
-    ))
+    client = chromadb.PersistentClient(path=DB_DIR)
     return client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=get_embedding_fn()
