@@ -21,7 +21,8 @@ OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 HERE = os.path.dirname(__file__)
 HTML_DIR = os.path.join(HERE, "data")
 # Use an absolute path for the Chroma DB folder
-DB_DIR = os.path.join(HERE, "chroma_hw4_db")
+DB_DIR = "/tmp/chroma_hw4_db"
+os.makedirs(DB_DIR, exist_ok=True)
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
 OVERLAP_SENTENCES = 2
