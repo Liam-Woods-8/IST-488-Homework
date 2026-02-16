@@ -25,6 +25,10 @@ DB_DIR = os.path.join(HERE, "chroma_hw4_db")
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
 OVERLAP_SENTENCES = 2
+MAX_CHARS = 12000
+
+def cap_text(s: str, max_chars: int = MAX_CHARS) -> str:
+    return s[:max_chars]
 
 def read_html_as_text(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -92,6 +96,7 @@ def build_vector_db_once():
         base = os.path.basename(fp)
         text = read_html_as_text(fp)
         c1, c2 = chunk_into_two(text)
+        c1, c2 = cap_text(c1), cap_text(c2)
 
         docs.extend([c1, c2])
         metas.extend(
