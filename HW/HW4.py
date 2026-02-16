@@ -12,6 +12,7 @@ except Exception as e:
     chromadb = None
     CHROMADB_AVAILABLE = False
     CHROMADB_IMPORT_ERROR = str(e)
+
 from openai import OpenAI
 
 st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="centered")
@@ -20,9 +21,7 @@ st.title("HW4 — iSchool Chatbot Using RAG")
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 HERE = os.path.dirname(__file__)
 HTML_DIR = os.path.join(HERE, "data")
-# Use an absolute path for the Chroma DB folder
 DB_DIR = "/tmp/chroma_hw4_db"
-os.makedirs(DB_DIR, exist_ok=True)
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
 OVERLAP_SENTENCES = 2
@@ -36,7 +35,6 @@ def read_html_as_text(path: str) -> str:
         soup = BeautifulSoup(f.read(), "html.parser")
     text = soup.get_text(separator=" ", strip=True)
     return re.sub(r"\s+", " ", text).strip()
-
 
 # Chunking method:
 # The HTML text is first split into sentences and then divided into two halves.
@@ -65,7 +63,12 @@ def chunk_into_two(text: str) -> list[str]:
     return [chunk_a, chunk_b]
 
 def db_exists() -> bool:
-    return os.path.isdir(DB_DIR) and len(os.listdir(DB_DIR)) > 0
+    if not os.path.isdir(DB_DIR):
+        return False
+    for _, _, files in os.walk(DB_DIR):
+        if files:
+            return True
+    return False
 
 def build_vector_db_once():
     if not OPENAI_API_KEY:
@@ -78,10 +81,6 @@ def build_vector_db_once():
         st.stop()
 
     client = chromadb.PersistentClient(path=DB_DIR)
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        pass
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
     oai = st.session_state.openai_client
@@ -89,7 +88,7 @@ def build_vector_db_once():
     def embed_texts(text_list, batch_size=50):
         all_embs = []
         for i in range(0, len(text_list), batch_size):
-            batch = text_list[i:i+batch_size]
+            batch = text_list[i:i + batch_size]
             resp = oai.embeddings.create(model="text-embedding-3-small", input=batch)
             all_embs.extend([d.embedding for d in resp.data])
         return all_embs
@@ -150,11 +149,6 @@ def keep_last_5_interactions(messages: list[dict]) -> list[dict]:
 if "openai_client" not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-st.write("DB_DIR:", DB_DIR)
-st.write("DB exists now?:", db_exists())
-if os.path.isdir(DB_DIR):
-    st.write("DB files:", os.listdir(DB_DIR))
-
 if not db_exists():
     if not CHROMADB_AVAILABLE:
         st.error(
@@ -195,10 +189,7 @@ if prompt:
     st.session_state.messages = keep_last_5_interactions(st.session_state.messages)
 
     ctx = retrieve_context(st.session_state.collection, prompt, TOP_K)
-    context_system = {
-        "role": "system",
-        "content": f"CONTEXT:\n{ctx}"
-    }
+    context_system = {"role": "system", "content": f"CONTEXT:\n{ctx}"}
 
     base_system = st.session_state.messages[0]
     convo = st.session_state.messages[1:]
