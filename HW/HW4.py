@@ -1,95 +1,146 @@
+import os
+import glob
+import re
 import streamlit as st
-import requests
 from bs4 import BeautifulSoup
+
+import chromadb
+from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from openai import OpenAI
-import anthropic
+
+st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="centered")
+st.title("HW4 — iSchool Chatbot Using RAG")
+
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+HTML_DIR = "/workspaces/Homework-1-IST488/HW/data"
+DB_DIR = "chroma_hw4_db"
+COLLECTION_NAME = "ischool_orgs"
+TOP_K = 4
+OVERLAP_SENTENCES = 2
+
+def read_html_as_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        soup = BeautifulSoup(f.read(), "html.parser")
+    text = soup.get_text(separator=" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-st.title("HW 03 — A Streaming Chatbot that Discusses a URL")
+# Chunking method:
+# The HTML text is first split into sentences and then divided into two halves.
+# A small overlap of sentences is kept between the halves so important ideas are
+# not cut in the middle. This method is simple, readable, and ensures exactly
+# two balanced chunks per document as required by the assignment.
+def chunk_into_two(text: str) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    if len(sentences) < 2:
+        mid = max(1, len(text) // 2)
+        return [text[:mid].strip(), text[mid:].strip()]
 
-st.write(
-    "This chatbot answers questions using one or two URLs you enter in the sidebar. "
-    "It streams responses while generating them. "
-    "Conversation memory: a buffer of 6 messages (3 user–assistant exchanges). "
-    "The system prompt (with URL context) is never discarded."
-)
+    mid = len(sentences) // 2
+    a_end = min(len(sentences), mid + OVERLAP_SENTENCES)
+    b_start = max(0, mid - OVERLAP_SENTENCES)
 
+    chunk_a = " ".join(sentences[:a_end]).strip()
+    chunk_b = " ".join(sentences[b_start:]).strip()
 
-def read_url_content(url: str) -> str | None:
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
-        return soup.get_text()
-    except requests.RequestException as e:
-        print(f"Error reading {url}: {e}")
-        return None
+    if not chunk_a:
+        chunk_a = " ".join(sentences[:mid]).strip()
+    if not chunk_b:
+        chunk_b = " ".join(sentences[mid:]).strip()
 
+    return [chunk_a, chunk_b]
 
-def build_system_message(url_text: str) -> dict:
-    system_prompt = (
-        "You are a helpful chatbot. Use the URL text below as your main source. "
-        "If the answer is not in the URL text, say you are not sure. "
-        "Explain things so a 10-year-old can understand."
-        "\n\nURL TEXT:\n"
-        f"{url_text}"
+def db_exists() -> bool:
+    return os.path.isdir(DB_DIR) and len(os.listdir(DB_DIR)) > 0
+
+def get_embedding_fn():
+    return OpenAIEmbeddingFunction(
+        api_key=OPENAI_API_KEY,
+        model_name="text-embedding-3-small",
     )
-    return {"role": "system", "content": system_prompt}
 
+def build_vector_db_once():
+    if not OPENAI_API_KEY:
+        st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+        st.stop()
 
-def buffer_6_keep_system(messages):
+    html_files = sorted(glob.glob(os.path.join(HTML_DIR, "*.html")))
+    if not html_files:
+        st.error(f"No .html files found in: {HTML_DIR}")
+        st.stop()
+
+    client = chromadb.PersistentClient(path=DB_DIR)
+    collection = client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        embedding_function=get_embedding_fn()
+    )
+
+    docs, metas, ids = [], [], []
+
+    for fp in html_files:
+        base = os.path.basename(fp)
+        text = read_html_as_text(fp)
+        c1, c2 = chunk_into_two(text)
+
+        docs.extend([c1, c2])
+        metas.extend(
+            [{"source": base, "chunk": 1}, {"source": base, "chunk": 2}]
+        )
+        ids.extend([f"{base}::1", f"{base}::2"])
+
+    collection.add(documents=docs, metadatas=metas, ids=ids)
+
+def get_collection():
+    client = chromadb.PersistentClient(path=DB_DIR)
+    return client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        embedding_function=get_embedding_fn()
+    )
+
+def retrieve_context(collection, query: str, k: int = TOP_K) -> str:
+    results = collection.query(query_texts=[query], n_results=k)
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+
+    blocks = []
+    for d, m in zip(docs, metas):
+        src = m.get("source", "unknown")
+        ch = m.get("chunk", "?")
+        blocks.append(f"[{src} | chunk {ch}] {d}")
+
+    return "\n\n".join(blocks).strip()
+
+def keep_last_5_interactions(messages: list[dict]) -> list[dict]:
     if not messages:
         return messages
-
-    system = []
-    rest = messages
-
-    if messages[0]["role"] == "system":
-        system = [messages[0]]
-        rest = messages[1:]
-
-    rest = rest[-6:]
+    system = [messages[0]] if messages[0]["role"] == "system" else []
+    rest = messages[1:] if system else messages
+    rest = rest[-10:]
     return system + rest
 
+if "openai_client" not in st.session_state:
+    st.session_state.openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
-claude_api_key = st.secrets.get("CLAUDE_API_KEY", "")
+if not db_exists():
+    st.info("Vector DB not found. Building it once from the HTML files...")
+    build_vector_db_once()
 
-url1 = st.sidebar.text_input("URL 1", placeholder="https://example.com")
-url2 = st.sidebar.text_input("URL 2 (optional)", placeholder="https://example.com")
+if "collection" not in st.session_state:
+    st.session_state.collection = get_collection()
 
-llm_choice = st.sidebar.selectbox(
-    "LLM",
-    ("OpenAI (GPT-5)", "Claude (Anthropic Opus)"),
-)
-
-use_both = st.sidebar.checkbox("Use both URLs as context", value=True)
-load_urls = st.sidebar.button("Load URL(s)")
-
-
-if "url_text" not in st.session_state:
-    st.session_state.url_text = ""
+def base_system_message() -> dict:
+    return {
+        "role": "system",
+        "content": (
+            "You answer questions about iSchool student organizations.\n"
+            "Use ONLY the CONTEXT provided.\n"
+            "If the answer is not in the context, say: \"I’m not sure based on the documents I have.\""
+        )
+    }
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [build_system_message("")]
-
-
-if load_urls:
-    texts = []
-
-    if url1.strip():
-        t1 = read_url_content(url1.strip())
-        if t1:
-            texts.append(t1)
-
-    if use_both and url2.strip():
-        t2 = read_url_content(url2.strip())
-        if t2:
-            texts.append(t2)
-
-    st.session_state.url_text = "\n\n---\n\n".join(texts).strip()
-    st.session_state.messages = [build_system_message(st.session_state.url_text)]
-
+    st.session_state.messages = [base_system_message()]
 
 for msg in st.session_state.messages:
     if msg["role"] == "system":
@@ -97,59 +148,28 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-
-prompt = st.chat_input("Ask a question about the URL(s)...")
+prompt = st.chat_input("Ask a question about the student orgs...")
 if prompt:
-    if not st.session_state.url_text:
-        st.info("Load at least one URL first using the sidebar.")
-        st.stop()
-
     st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages = keep_last_5_interactions(st.session_state.messages)
 
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    ctx = retrieve_context(st.session_state.collection, prompt, TOP_K)
+    context_system = {
+        "role": "system",
+        "content": f"CONTEXT:\n{ctx}"
+    }
 
-    st.session_state.messages = buffer_6_keep_system(st.session_state.messages)
+    base_system = st.session_state.messages[0]
+    convo = st.session_state.messages[1:]
 
-    if llm_choice == "OpenAI (GPT-5)":
-        client = OpenAI(api_key=openai_api_key)
+    stream = st.session_state.openai_client.chat.completions.create(
+        model="gpt-5-chat-latest",
+        messages=[base_system, context_system] + convo,
+        stream=True,
+    )
 
-        stream = client.chat.completions.create(
-            model="gpt-5-chat-latest",
-            messages=st.session_state.messages,
-            stream=True,
-        )
+    with st.chat_message("assistant"):
+        answer = st.write_stream(stream)
 
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
-    else:
-        client = anthropic.Anthropic(api_key=claude_api_key)
-
-        system_text = st.session_state.messages[0]["content"]
-        convo = [m for m in st.session_state.messages if m["role"] != "system"]
-
-        with st.chat_message("assistant"):
-            collected = []
-            placeholder = st.empty()
-            full = ""
-
-            with client.messages.stream(
-                model="claude-opus-4-6",
-                max_tokens=700,
-                temperature=0.2,
-                system=system_text,
-                messages=convo,
-            ) as stream:
-                for text in stream.text_stream:
-                    collected.append(text)
-                    full += text
-                    placeholder.markdown(full)
-
-            assistant_text = "".join(collected)
-
-        st.session_state.messages.append({"role": "assistant", "content": assistant_text})
-
-    st.session_state.messages = buffer_6_keep_system(st.session_state.messages)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+    st.session_state.messages = keep_last_5_interactions(st.session_state.messages)
