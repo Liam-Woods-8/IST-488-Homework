@@ -149,6 +149,11 @@ def keep_last_5_interactions(messages: list[dict]) -> list[dict]:
 if "openai_client" not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
+st.write("DB_DIR:", DB_DIR)
+st.write("DB exists now?:", db_exists())
+if os.path.isdir(DB_DIR):
+    st.write("DB files:", os.listdir(DB_DIR))
+
 if not db_exists():
     if not CHROMADB_AVAILABLE:
         st.error(
