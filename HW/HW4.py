@@ -4,7 +4,16 @@ import re
 import streamlit as st
 from bs4 import BeautifulSoup
 
-import chromadb
+try:
+    import chromadb
+    from chromadb.config import Settings
+    CHROMADB_AVAILABLE = True
+    CHROMADB_IMPORT_ERROR = None
+except Exception as e:
+    chromadb = None
+    Settings = None
+    CHROMADB_AVAILABLE = False
+    CHROMADB_IMPORT_ERROR = str(e)
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from openai import OpenAI
 
@@ -12,7 +21,8 @@ st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="cente
 st.title("HW4 — iSchool Chatbot Using RAG")
 
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
-HTML_DIR = "/HW/data"
+HERE = os.path.dirname(__file__)
+HTML_DIR = os.path.join(HERE, "data")
 DB_DIR = "chroma_hw4_db"
 COLLECTION_NAME = "ischool_orgs"
 TOP_K = 4
@@ -70,7 +80,10 @@ def build_vector_db_once():
         st.error(f"No .html files found in: {HTML_DIR}")
         st.stop()
 
-    client = chromadb.PersistentClient(path=DB_DIR)
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=DB_DIR,
+    ))
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=get_embedding_fn()
@@ -92,7 +105,10 @@ def build_vector_db_once():
     collection.add(documents=docs, metadatas=metas, ids=ids)
 
 def get_collection():
-    client = chromadb.PersistentClient(path=DB_DIR)
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=DB_DIR,
+    ))
     return client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=get_embedding_fn()
@@ -123,6 +139,14 @@ if "openai_client" not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 if not db_exists():
+    if not CHROMADB_AVAILABLE:
+        st.error(
+            "ChromaDB is not available in this environment.\n"
+            f"Import error: {CHROMADB_IMPORT_ERROR}\n"
+            "Chroma requires sqlite3 >= 3.35.0; consider upgrading sqlite or running in a different environment."
+        )
+        st.stop()
+
     st.info("Vector DB not found. Building it once from the HTML files...")
     build_vector_db_once()
 
