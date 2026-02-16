@@ -66,14 +66,6 @@ def chunk_into_two(text: str) -> list[str]:
 def db_exists() -> bool:
     return os.path.isdir(DB_DIR) and len(os.listdir(DB_DIR)) > 0
 
-def get_embedding_fn():
-    # import the Chroma helper here so top-level import doesn't fail
-    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-    return OpenAIEmbeddingFunction(
-        api_key=OPENAI_API_KEY,
-        model_name="text-embedding-3-small",
-    )
-
 def build_vector_db_once():
     if not OPENAI_API_KEY:
         st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
@@ -85,36 +77,57 @@ def build_vector_db_once():
         st.stop()
 
     client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=get_embedding_fn()
-    )
+    try:
+        client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
-    docs, metas, ids = [], [], []
+    oai = OpenAI(api_key=OPENAI_API_KEY)
+
+    docs, metas, ids, embs = [], [], [], []
+
+    def embed_texts(text_list):
+        resp = oai.embeddings.create(
+            model="text-embedding-3-small",
+            input=text_list
+        )
+        return [d.embedding for d in resp.data]
+
+    batch_texts = []
+    batch_meta = []
+    batch_ids = []
 
     for fp in html_files:
         base = os.path.basename(fp)
         text = read_html_as_text(fp)
         c1, c2 = chunk_into_two(text)
-        c1, c2 = cap_text(c1), cap_text(c2)
 
-        docs.extend([c1, c2])
-        metas.extend(
-            [{"source": base, "chunk": 1}, {"source": base, "chunk": 2}]
-        )
-        ids.extend([f"{base}::1", f"{base}::2"])
+        batch_texts.extend([c1[:12000], c2[:12000]])
+        batch_meta.extend([{"source": base, "chunk": 1}, {"source": base, "chunk": 2}])
+        batch_ids.extend([f"{base}::1", f"{base}::2"])
 
-    collection.add(documents=docs, metadatas=metas, ids=ids)
+    batch_embs = embed_texts(batch_texts)
+
+    collection.add(
+        documents=batch_texts,
+        metadatas=batch_meta,
+        ids=batch_ids,
+        embeddings=batch_embs
+    )
 
 def get_collection():
     client = chromadb.PersistentClient(path=DB_DIR)
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=get_embedding_fn()
-    )
+    return client.get_or_create_collection(name=COLLECTION_NAME)
 
 def retrieve_context(collection, query: str, k: int = TOP_K) -> str:
-    results = collection.query(query_texts=[query], n_results=k)
+    oai = OpenAI(api_key=OPENAI_API_KEY)
+    q_emb = oai.embeddings.create(
+        model="text-embedding-3-small",
+        input=[query]
+    ).data[0].embedding
+
+    results = collection.query(query_embeddings=[q_emb], n_results=k)
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
 
