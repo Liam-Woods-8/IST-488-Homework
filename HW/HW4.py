@@ -1,210 +1,192 @@
-import os
-import glob
-import re
-import streamlit as st
-from bs4 import BeautifulSoup
+import sys
 
 try:
-    import chromadb
-    CHROMADB_AVAILABLE = True
-    CHROMADB_IMPORT_ERROR = None
-except Exception as e:
-    chromadb = None
-    CHROMADB_AVAILABLE = False
-    CHROMADB_IMPORT_ERROR = str(e)
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except Exception:
+    pass
 
+import re
+from pathlib import Path
+
+import chromadb
+from chromadb.utils import embedding_functions
+import streamlit as st
 from openai import OpenAI
 
-st.set_page_config(page_title="HW4 — iSchool Chatbot Using RAG", layout="centered")
-st.title("HW4 — iSchool Chatbot Using RAG")
 
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
-HERE = os.path.dirname(__file__)
-HTML_DIR = os.path.join(HERE, "data")
-DB_DIR = "/tmp/chroma_hw4_db"
-COLLECTION_NAME = "ischool_orgs"
-TOP_K = 4
-OVERLAP_SENTENCES = 2
-MAX_CHARS = 12000
+# -----------------------------
+# HTML helpers
+# -----------------------------
+def html_to_text(html: str) -> str:
+    """Lightweight HTML -> plain text (no extra libraries)."""
+    html = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
+    html = re.sub(r"(?is)<style.*?>.*?</style>", " ", html)
+    html = re.sub(r"(?s)<.*?>", " ", html)
+    html = re.sub(r"\s+", " ", html).strip()
+    return html
 
-def cap_text(s: str, max_chars: int = MAX_CHARS) -> str:
-    return s[:max_chars]
 
-def read_html_as_text(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        soup = BeautifulSoup(f.read(), "html.parser")
-    text = soup.get_text(separator=" ", strip=True)
-    return re.sub(r"\s+", " ", text).strip()
+def two_chunk_split(text: str) -> list[str]:
+    """
+    HW4 requires TWO mini-documents per source document.
 
-# Chunking method:
-# The HTML text is first split into sentences and then divided into two halves.
-# A small overlap of sentences is kept between the halves so important ideas are
-# not cut in the middle. This method is simple, readable, and ensures exactly
-# two balanced chunks per document as required by the assignment.
-def chunk_into_two(text: str) -> list[str]:
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) < 2:
-        mid = max(1, len(text) // 2)
-        return [text[:mid].strip(), text[mid:].strip()]
+    Method:
+    - split text into 2 halves by character length
+    - add small overlap around the midpoint to avoid cutting key sentences
 
-    mid = len(sentences) // 2
-    a_end = min(len(sentences), mid + OVERLAP_SENTENCES)
-    b_start = max(0, mid - OVERLAP_SENTENCES)
+    Why:
+    - exactly meets the “two chunks per doc” requirement
+    - deterministic + simple + fast
+    - overlap reduces context loss at boundary
+    """
+    text = text.strip()
+    if not text:
+        return []
 
-    chunk_a = " ".join(sentences[:a_end]).strip()
-    chunk_b = " ".join(sentences[b_start:]).strip()
+    overlap = 200
+    mid = len(text) // 2
+    first = text[: mid + overlap].strip()
+    second = text[max(0, mid - overlap) :].strip()
+    return [first, second]
 
-    if not chunk_a:
-        chunk_a = " ".join(sentences[:mid]).strip()
-    if not chunk_b:
-        chunk_b = " ".join(sentences[mid:]).strip()
 
-    return [chunk_a, chunk_b]
-
-def db_exists() -> bool:
-    if not os.path.isdir(DB_DIR):
-        return False
-    for _, _, files in os.walk(DB_DIR):
-        if files:
-            return True
-    return False
-
-def build_vector_db_once():
-    if not OPENAI_API_KEY:
-        st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-        st.stop()
-
-    html_files = sorted(glob.glob(os.path.join(HTML_DIR, "*.html")))
-    if not html_files:
-        st.error(f"No .html files found in: {HTML_DIR}")
-        st.stop()
-
-    client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_or_create_collection(name=COLLECTION_NAME)
-
-    oai = st.session_state.openai_client
-
-    def embed_texts(text_list, batch_size=50):
-        all_embs = []
-        for i in range(0, len(text_list), batch_size):
-            batch = text_list[i:i + batch_size]
-            resp = oai.embeddings.create(model="text-embedding-3-small", input=batch)
-            all_embs.extend([d.embedding for d in resp.data])
-        return all_embs
-
-    batch_texts = []
-    batch_meta = []
-    batch_ids = []
-
-    for fp in html_files:
-        base = os.path.basename(fp)
-        text = read_html_as_text(fp)
-        c1, c2 = chunk_into_two(text)
-
-        batch_texts.extend([cap_text(c1), cap_text(c2)])
-        batch_meta.extend([{"source": base, "chunk": 1}, {"source": base, "chunk": 2}])
-        batch_ids.extend([f"{base}::1", f"{base}::2"])
-
-    batch_embs = embed_texts(batch_texts)
-
-    collection.add(
-        documents=batch_texts,
-        metadatas=batch_meta,
-        ids=batch_ids,
-        embeddings=batch_embs
-    )
-
-def get_collection():
-    client = chromadb.PersistentClient(path=DB_DIR)
-    return client.get_or_create_collection(name=COLLECTION_NAME)
-
-def retrieve_context(collection, query: str, k: int = TOP_K) -> str:
-    oai = st.session_state.openai_client
-    q_emb = oai.embeddings.create(
-        model="text-embedding-3-small",
-        input=[query]
-    ).data[0].embedding
-
-    results = collection.query(query_embeddings=[q_emb], n_results=k)
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-
-    blocks = []
-    for d, m in zip(docs, metas):
-        src = m.get("source", "unknown")
-        ch = m.get("chunk", "?")
-        blocks.append(f"[{src} | chunk {ch}] {d}")
-
-    return "\n\n".join(blocks).strip()
-
-def keep_last_5_interactions(messages: list[dict]) -> list[dict]:
+# -----------------------------
+# Memory buffer (last 5 interactions)
+# -----------------------------
+def buffer_last_5_interactions(messages):
+    """
+    Keep system prompt + last 5 interactions (user+assistant pairs = last 10 messages).
+    """
     if not messages:
         return messages
-    system = [messages[0]] if messages[0]["role"] == "system" else []
-    rest = messages[1:] if system else messages
-    rest = rest[-10:]
-    return system + rest
 
-if "openai_client" not in st.session_state:
-    st.session_state.openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    system = []
+    if messages[0]["role"] == "system":
+        system = [messages[0]]
+        rest = messages[1:]
+    else:
+        rest = messages
 
-if not db_exists():
-    if not CHROMADB_AVAILABLE:
-        st.error(
-            "ChromaDB is not available in this environment.\n"
-            f"Import error: {CHROMADB_IMPORT_ERROR}\n"
-            "Chroma requires sqlite3 >= 3.35.0; consider upgrading sqlite or running in a different environment."
-        )
-        st.stop()
+    return system + rest[-10:]
 
-    if not st.session_state.get("did_build_db", False):
-        st.info("Vector DB not found. Building it once from the HTML files...")
-        st.session_state.did_build_db = True
 
-    build_vector_db_once()
+# -----------------------------
+# Vector DB (HTML RAG)
+# -----------------------------
+def create_hw4_vectordb(html_folder: str):
+    client = chromadb.PersistentClient(path="./chroma_hw4")
 
-if "collection" not in st.session_state:
-    st.session_state.collection = get_collection()
-
-def base_system_message() -> dict:
-    return {
-        "role": "system",
-        "content": (
-            "You answer questions about iSchool student organizations.\n"
-            "Use ONLY the CONTEXT provided.\n"
-            "If the answer is not in the context, say: \"I’m not sure based on the documents I have.\""
-        )
-    }
-
-if "messages" not in st.session_state:
-    st.session_state.messages = [base_system_message()]
-
-for msg in st.session_state.messages:
-    if msg["role"] == "system":
-        continue
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-prompt = st.chat_input("Ask a question about the student orgs...")
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.session_state.messages = keep_last_5_interactions(st.session_state.messages)
-
-    ctx = retrieve_context(st.session_state.collection, prompt, TOP_K)
-    context_system = {"role": "system", "content": f"CONTEXT:\n{ctx}"}
-
-    base_system = st.session_state.messages[0]
-    convo = st.session_state.messages[1:]
-
-    stream = st.session_state.openai_client.chat.completions.create(
-        model="gpt-5-chat-latest",
-        messages=[base_system, context_system] + convo,
-        stream=True,
+    embed_fn = embedding_functions.OpenAIEmbeddingFunction(
+        api_key=st.secrets["OPENAI_API_KEY"],
+        model_name="text-embedding-3-small",
     )
 
-    with st.chat_message("assistant"):
-        answer = st.write_stream(stream)
+    collection = client.get_or_create_collection(
+        name="HW4Collection",
+        embedding_function=embed_fn,
+    )
 
-    st.session_state.messages.append({"role": "assistant", "content": answer})
-    st.session_state.messages = keep_last_5_interactions(st.session_state.messages)
+    # Create DB only if it doesn't already exist (i.e., collection has docs)
+    try:
+        if len(collection.get()["ids"]) > 0:
+            return collection
+    except Exception:
+        pass
+
+    folder_path = Path(html_folder)
+    if not folder_path.exists():
+        st.error(f"HTML folder not found: {folder_path.resolve()}")
+        return collection
+
+    for file_path in folder_path.glob("*.html"):
+        html = file_path.read_text(encoding="utf-8", errors="ignore")
+        text = html_to_text(html)
+        chunks = two_chunk_split(text)
+
+        if len(chunks) != 2:
+            continue
+
+        ids = [f"{file_path.name}::chunk0", f"{file_path.name}::chunk1"]
+        metadatas = [
+            {"source": file_path.name, "chunk": 0},
+            {"source": file_path.name, "chunk": 1},
+        ]
+        collection.add(ids=ids, documents=chunks, metadatas=metadatas)
+
+    return collection
+
+
+def retrieve_top_chunks(question: str, n_results: int = 4):
+    results = st.session_state.HW4_VectorDB.query(
+        query_texts=[question],
+        n_results=n_results,
+        include=["documents", "metadatas"],
+    )
+    chunks = results["documents"][0]
+    metas = results["metadatas"][0]
+    sources = [f"{m['source']} (chunk {m['chunk']})" for m in metas]
+    return chunks, sources
+
+
+# -----------------------------
+# UI (HW4 page only)
+# -----------------------------
+st.title("HW 4 — iSchool Student Orgs Chatbot (RAG)")
+
+# Since this file is HW/HW4.py, Data is at HW/Data
+HTML_FOLDER = "HW/Data"
+
+# Optional debug (remove before submitting if you want)
+st.caption(f"Loading HTML from: {Path(HTML_FOLDER).resolve()}")
+st.caption(f"HTML files found: {len(list(Path(HTML_FOLDER).glob('*.html')))}")
+
+if "HW4_VectorDB" not in st.session_state:
+    st.session_state.HW4_VectorDB = create_hw4_vectordb(HTML_FOLDER)
+
+if "hw4_messages" not in st.session_state:
+    st.session_state.hw4_messages = [
+        {
+            "role": "system",
+            "content": "You answer questions about iSchool student organizations using only the provided documents."
+        }
+    ]
+
+# render history
+for m in st.session_state.hw4_messages:
+    if m["role"] == "system":
+        continue
+    with st.chat_message(m["role"]):
+        st.write(m["content"])
+
+q = st.chat_input("Ask a question about student organizations...")
+if q:
+    st.session_state.hw4_messages.append({"role": "user", "content": q})
+    st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
+
+    chunks, sources = retrieve_top_chunks(q, n_results=4)
+    context = "\n\n---\n\n".join(chunks)
+
+    prompt = (
+        "Use ONLY the RAG context below to answer.\n"
+        "If the answer is not in the RAG context, say you cannot find it.\n\n"
+        f"RAG CONTEXT:\n{context}\n\n"
+        f"QUESTION:\n{q}\n"
+    )
+
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    resp = client.chat.completions.create(
+        model="gpt-5-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    answer = resp.choices[0].message.content
+
+    st.session_state.hw4_messages.append({"role": "assistant", "content": answer})
+    st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
+
+    with st.chat_message("assistant"):
+        st.write(answer)
+
+    st.write("Sources:")
+    for s in sources:
+        st.write(f"- {s}")
