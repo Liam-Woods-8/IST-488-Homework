@@ -15,11 +15,7 @@ import streamlit as st
 from openai import OpenAI
 
 
-# -----------------------------
-# HTML helpers
-# -----------------------------
 def html_to_text(html: str) -> str:
-    """Lightweight HTML -> plain text (no extra libraries)."""
     html = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
     html = re.sub(r"(?is)<style.*?>.*?</style>", " ", html)
     html = re.sub(r"(?s)<.*?>", " ", html)
@@ -28,36 +24,18 @@ def html_to_text(html: str) -> str:
 
 
 def two_chunk_split(text: str) -> list[str]:
-    """
-    HW4 requires TWO mini-documents per source document.
-
-    Method:
-    - split text into 2 halves by character length
-    - add small overlap around the midpoint to avoid cutting key sentences
-
-    Why:
-    - exactly meets the “two chunks per doc” requirement
-    - deterministic + simple + fast
-    - overlap reduces context loss at boundary
-    """
     text = text.strip()
     if not text:
         return []
 
     overlap = 200
     mid = len(text) // 2
-    first = text[: mid + overlap].strip()
-    second = text[max(0, mid - overlap) :].strip()
-    return [first, second]
+    chunk1 = text[: mid + overlap].strip()
+    chunk2 = text[max(0, mid - overlap) :].strip()
+    return [chunk1, chunk2]
 
 
-# -----------------------------
-# Memory buffer (last 5 interactions)
-# -----------------------------
-def buffer_last_5_interactions(messages):
-    """
-    Keep system prompt + last 5 interactions (user+assistant pairs = last 10 messages).
-    """
+def buffer_last_5_interactions(messages: list[dict]) -> list[dict]:
     if not messages:
         return messages
 
@@ -71,47 +49,40 @@ def buffer_last_5_interactions(messages):
     return system + rest[-10:]
 
 
-# -----------------------------
-# Vector DB (HTML RAG)
-# -----------------------------
-def create_hw4_vectordb(html_folder: str):
-    client = chromadb.PersistentClient(path="./chroma_hw4")
+def create_hw4_vectordb(html_dir: Path):
+    chroma_client = chromadb.PersistentClient(path="./chroma_hw4")
 
     embed_fn = embedding_functions.OpenAIEmbeddingFunction(
         api_key=st.secrets["OPENAI_API_KEY"],
         model_name="text-embedding-3-small",
     )
 
-    collection = client.get_or_create_collection(
+    collection = chroma_client.get_or_create_collection(
         name="HW4Collection",
         embedding_function=embed_fn,
     )
 
-    # Create DB only if it doesn't already exist (i.e., collection has docs)
     try:
         if len(collection.get()["ids"]) > 0:
             return collection
     except Exception:
         pass
 
-    folder_path = Path(html_folder)
-    if not folder_path.exists():
-        st.error(f"HTML folder not found: {folder_path.resolve()}")
-        return collection
-
-    # Find .html/.htm in THIS folder (not a pattern string)
     html_files = [
-        p for p in folder_path.iterdir()
+        p for p in html_dir.iterdir()
         if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]
     ]
 
     if not html_files:
-        st.error(f"No HTML files found in: {folder_path.resolve()}")
+        st.error(f"No HTML files found in: {html_dir}")
         return collection
 
-    for file_path in html_files:
-        html = file_path.read_text(encoding="utf-8", errors="ignore")
-        text = html_to_text(html)
+    progress = st.progress(0)
+    total = len(html_files)
+
+    for i, file_path in enumerate(html_files, start=1):
+        raw_html = file_path.read_text(encoding="utf-8", errors="ignore")
+        text = html_to_text(raw_html)
         chunks = two_chunk_split(text)
 
         if len(chunks) != 2:
@@ -122,78 +93,99 @@ def create_hw4_vectordb(html_folder: str):
             {"source": file_path.name, "chunk": 0},
             {"source": file_path.name, "chunk": 1},
         ]
-        collection.add(ids=ids, documents=chunks, metadatas=metadatas)
 
+        collection.add(ids=ids, documents=chunks, metadatas=metadatas)
+        progress.progress(i / total)
+
+    progress.empty()
     return collection
 
 
-def retrieve_top_chunks(question: str, n_results: int = 4):
-    results = st.session_state.HW4_VectorDB.query(
+def retrieve_context(collection, question: str, n_results: int = 4):
+    results = collection.query(
         query_texts=[question],
         n_results=n_results,
         include=["documents", "metadatas"],
     )
-    chunks = results["documents"][0]
+
+    docs = results["documents"][0]
     metas = results["metadatas"][0]
     sources = [f"{m['source']} (chunk {m['chunk']})" for m in metas]
-    return chunks, sources
+    return docs, sources
 
 
-# -----------------------------
-# UI (HW4 page only)
-# -----------------------------
-st.title("HW 4 — iSchool Student Orgs Chatbot (RAG)")
+st.title("HW 4 — iSchool Chatbot Using RAG")
 
-# ✅ Correct pathing:
-# HW4.py is in HW/, and your folder is HW/data (lowercase).
-BASE_DIR = Path(__file__).resolve().parent   # .../HW
-HTML_FOLDER = BASE_DIR / "data"             # .../HW/data
+BASE_DIR = Path(__file__).resolve().parent
+HTML_DIR = BASE_DIR / "data"
 
-# Optional debug (remove before submitting)
-st.caption(f"Loading HTML from: {HTML_FOLDER}")
-if HTML_FOLDER.exists():
-    st.caption(f"Folder items (first 25): {[p.name for p in list(HTML_FOLDER.iterdir())[:25]]}")
-html_count = len([p for p in HTML_FOLDER.iterdir() if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]]) if HTML_FOLDER.exists() else 0
+st.caption(f"Data folder: {HTML_DIR}")
+
+if not HTML_DIR.exists():
+    st.error("Your data folder was not found. Expected it at HW/data.")
+    st.stop()
+
+html_count = len([
+    p for p in HTML_DIR.iterdir()
+    if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]
+])
 st.caption(f"HTML files found: {html_count}")
 
-if "HW4_VectorDB" not in st.session_state:
-    st.session_state.HW4_VectorDB = create_hw4_vectordb(str(HTML_FOLDER))
+if "openai_client" not in st.session_state:
+    st.session_state.openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+if "hw4_collection" not in st.session_state:
+    with st.spinner("Loading vector database..."):
+        st.session_state.hw4_collection = create_hw4_vectordb(HTML_DIR)
 
 if "hw4_messages" not in st.session_state:
     st.session_state.hw4_messages = [
         {
             "role": "system",
-            "content": "You answer questions about iSchool student organizations using only the provided documents."
+            "content": (
+                "You are a helpful AI assistant for Syracuse student organizations. "
+                "Use the provided RAG context to answer. "
+                "If the answer is not in the context, say you cannot find it."
+            ),
         }
     ]
 
-# render history
 for m in st.session_state.hw4_messages:
     if m["role"] == "system":
         continue
     with st.chat_message(m["role"]):
         st.write(m["content"])
 
-q = st.chat_input("Ask a question about student organizations...")
-if q:
-    st.session_state.hw4_messages.append({"role": "user", "content": q})
+prompt = st.chat_input("Ask a question about student organizations...")
+
+if prompt:
+    docs, sources = retrieve_context(st.session_state.hw4_collection, prompt, n_results=4)
+    extra_info = "\n\n---\n\n".join(docs)
+
+    rag_system = (
+        "Use the following context to answer the question.\n\n"
+        f"CONTEXT:\n{extra_info}\n\n"
+        "If the context doesn't contain the answer, say you cannot find it.\n"
+    )
+
+    st.session_state.hw4_messages.append({"role": "user", "content": prompt})
     st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
 
-    chunks, sources = retrieve_top_chunks(q, n_results=4)
-    context = "\n\n---\n\n".join(chunks)
+    messages_for_llm = []
 
-    prompt = (
-        "Use ONLY the RAG context below to answer.\n"
-        "If the answer is not in the RAG context, say you cannot find it.\n\n"
-        f"RAG CONTEXT:\n{context}\n\n"
-        f"QUESTION:\n{q}\n"
-    )
+    if st.session_state.hw4_messages[0]["role"] == "system":
+        messages_for_llm.append(st.session_state.hw4_messages[0])
 
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    resp = client.chat.completions.create(
+    messages_for_llm.append({"role": "system", "content": rag_system})
+
+    for msg in st.session_state.hw4_messages[1:]:
+        messages_for_llm.append(msg)
+
+    resp = st.session_state.openai_client.chat.completions.create(
         model="gpt-5-mini",
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages_for_llm,
     )
+
     answer = resp.choices[0].message.content
 
     st.session_state.hw4_messages.append({"role": "assistant", "content": answer})
@@ -202,6 +194,6 @@ if q:
     with st.chat_message("assistant"):
         st.write(answer)
 
-    st.write("Sources:")
-    for s in sources:
-        st.write(f"- {s}")
+    with st.expander("Sources used"):
+        for s in sources:
+            st.write(f"- {s}")
