@@ -99,7 +99,17 @@ def create_hw4_vectordb(html_folder: str):
         st.error(f"HTML folder not found: {folder_path.resolve()}")
         return collection
 
-    for file_path in folder_path.glob("*.html"):
+    # Find .html/.htm in THIS folder (not a pattern string)
+    html_files = [
+        p for p in folder_path.iterdir()
+        if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]
+    ]
+
+    if not html_files:
+        st.error(f"No HTML files found in: {folder_path.resolve()}")
+        return collection
+
+    for file_path in html_files:
         html = file_path.read_text(encoding="utf-8", errors="ignore")
         text = html_to_text(html)
         chunks = two_chunk_split(text)
@@ -134,15 +144,20 @@ def retrieve_top_chunks(question: str, n_results: int = 4):
 # -----------------------------
 st.title("HW 4 — iSchool Student Orgs Chatbot (RAG)")
 
-# Since this file is HW/HW4.py, Data is at HW/Data
-HTML_FOLDER = "HW/data/*.html"
+# ✅ Correct pathing:
+# HW4.py is in HW/, and your folder is HW/data (lowercase).
+BASE_DIR = Path(__file__).resolve().parent   # .../HW
+HTML_FOLDER = BASE_DIR / "data"             # .../HW/data
 
-# Optional debug (remove before submitting if you want)
-st.caption(f"Loading HTML from: {Path(HTML_FOLDER).resolve()}")
-st.caption(f"HTML files found: {len(list(Path(HTML_FOLDER).glob('*.html')))}")
+# Optional debug (remove before submitting)
+st.caption(f"Loading HTML from: {HTML_FOLDER}")
+if HTML_FOLDER.exists():
+    st.caption(f"Folder items (first 25): {[p.name for p in list(HTML_FOLDER.iterdir())[:25]]}")
+html_count = len([p for p in HTML_FOLDER.iterdir() if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]]) if HTML_FOLDER.exists() else 0
+st.caption(f"HTML files found: {html_count}")
 
 if "HW4_VectorDB" not in st.session_state:
-    st.session_state.HW4_VectorDB = create_hw4_vectordb(HTML_FOLDER)
+    st.session_state.HW4_VectorDB = create_hw4_vectordb(str(HTML_FOLDER))
 
 if "hw4_messages" not in st.session_state:
     st.session_state.hw4_messages = [
