@@ -135,7 +135,7 @@ def retrieve_top_chunks(question: str, n_results: int = 4):
 st.title("HW 4 — iSchool Student Orgs Chatbot (RAG)")
 
 # Since this file is HW/HW4.py, Data is at HW/Data
-HTML_FOLDER = "HW/Data"
+HTML_FOLDER = "HW/Data/*.html"
 
 # Optional debug (remove before submitting if you want)
 st.caption(f"Loading HTML from: {Path(HTML_FOLDER).resolve()}")
