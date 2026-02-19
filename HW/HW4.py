@@ -15,9 +15,7 @@ import streamlit as st
 from openai import OpenAI
 
 
-# ---------------------------
 # HTML -> clean text
-# ---------------------------
 def html_to_text(html: str) -> str:
     """Remove script/style tags and strip all HTML tags to get plain text."""
     html = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
@@ -27,9 +25,7 @@ def html_to_text(html: str) -> str:
     return html
 
 
-# ---------------------------
 # Chunking method (REQUIRED)
-# ---------------------------
 def two_chunk_split(text: str) -> list[str]:
     """
     Chunking method: split each document into exactly TWO chunks.
@@ -53,9 +49,7 @@ def two_chunk_split(text: str) -> list[str]:
     return [chunk1, chunk2]
 
 
-# ---------------------------
 # Memory buffer (last 5 interactions)
-# ---------------------------
 def buffer_last_5_interactions(messages: list[dict]) -> list[dict]:
     """
     Keep system message + last 10 messages (5 user/assistant pairs).
@@ -73,9 +67,7 @@ def buffer_last_5_interactions(messages: list[dict]) -> list[dict]:
     return system + rest[-10:]
 
 
-# ---------------------------
-# Vector DB creation (only if needed)
-# ---------------------------
+# Vector DB creation 
 def create_hw4_vectordb(html_dir: Path):
     chroma_client = chromadb.PersistentClient(path="./chroma_hw4")
 
@@ -89,7 +81,7 @@ def create_hw4_vectordb(html_dir: Path):
         embedding_function=embed_fn,
     )
 
-    # Only build DB if empty (assignment requirement)
+    # Only build DB if empty 
     try:
         if collection.count() > 0:
             return collection
@@ -112,7 +104,7 @@ def create_hw4_vectordb(html_dir: Path):
         raw_html = file_path.read_text(encoding="utf-8", errors="ignore")
         text = html_to_text(raw_html)
 
-        # skip super tiny docs (often nav pages / empty)
+        # skip super tiny docs 
         if len(text) < 200:
             progress.progress(i / total)
             continue
@@ -122,7 +114,7 @@ def create_hw4_vectordb(html_dir: Path):
             progress.progress(i / total)
             continue
 
-        # ensure chunks are not empty
+        # ensure chunks not empty
         if any(len(c) < 50 for c in chunks):
             progress.progress(i / total)
             continue
@@ -152,9 +144,7 @@ def retrieve_context(collection, question: str, n_results: int = 4):
     return docs, sources
 
 
-# ---------------------------
 # Streamlit App
-# ---------------------------
 st.title("HW 4 — iSchool Chatbot Using RAG")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -188,7 +178,7 @@ if "hw4_messages" not in st.session_state:
         }
     ]
 
-# display chat history (except system)
+# display chat history
 for m in st.session_state.hw4_messages:
     if m["role"] == "system":
         continue
@@ -206,13 +196,12 @@ if prompt:
     st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
 
     # Build messages for the LLM:
-    # - Keep system
-    # - Provide context + question as a USER message (simpler + safer than extra system message)
+    # Keep system and Provide context + question as a USER message
     messages_for_llm = []
     if st.session_state.hw4_messages and st.session_state.hw4_messages[0]["role"] == "system":
         messages_for_llm.append(st.session_state.hw4_messages[0])
 
-    # Add recent conversation (excluding system) *before* the RAG prompt
+    # Add recent conversation (excluding system) before the RAG prompt
     for msg in st.session_state.hw4_messages[1:]:
         messages_for_llm.append(msg)
 
@@ -233,17 +222,8 @@ if prompt:
 
     answer = resp.choices[0].message.content or ""
 
-    # (Optional) make sources obvious for graders
-    answer_with_sources = answer.strip()
-    if sources:
-        answer_with_sources += "\n\nSources:\n" + "\n".join([f"- {s}" for s in sources])
+st.session_state.hw4_messages.append({"role": "assistant", "content": answer})
+st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
 
-    st.session_state.hw4_messages.append({"role": "assistant", "content": answer_with_sources})
-    st.session_state.hw4_messages = buffer_last_5_interactions(st.session_state.hw4_messages)
-
-    with st.chat_message("assistant"):
-        st.write(answer_with_sources)
-
-    with st.expander("Sources used"):
-        for s in sources:
-            st.write(f"- {s}")
+with st.chat_message("assistant"):
+    st.write(answer)
