@@ -160,8 +160,6 @@ st.title("HW 4 — iSchool Chatbot Using RAG")
 BASE_DIR = Path(__file__).resolve().parent
 HTML_DIR = BASE_DIR / "data"
 
-st.caption(f"Data folder: {HTML_DIR}")
-
 if not HTML_DIR.exists():
     st.error("Your data folder was not found. Expected it at HW/data.")
     st.stop()
@@ -170,7 +168,6 @@ html_count = len([
     p for p in HTML_DIR.iterdir()
     if p.is_file() and p.suffix.lower() in [".html", ".htm", ".xhtml"]
 ])
-st.caption(f"HTML files found: {html_count}")
 
 if "openai_client" not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
