@@ -1,8 +1,9 @@
 streamlit
 openai
+chromadb
+pysqlite3-binary
 anthropic
 requests
 beautifulsoup4
 PyMuPDF
-chromadb
 lxml
