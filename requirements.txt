@@ -7,3 +7,6 @@ requests
 beautifulsoup4
 PyMuPDF
 lxml
+pandas
+scikit-learn
+joblib
